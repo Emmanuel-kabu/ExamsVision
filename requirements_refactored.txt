@@ -1,0 +1,47 @@
+# Core dependencies
+streamlit>=1.28.0
+opencv-python>=4.8.0
+ultralytics>=8.0.0
+torch>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Authentication
+streamlit-authenticator>=0.2.0
+authlib>=1.3.2
+oauthlib>=3.2.0
+requests>=2.31.0
+
+# Data processing and visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# Email and notifications
+smtplib  # Built-in
+email  # Built-in
+
+# Configuration and utilities
+pyyaml>=6.0
+python-dotenv>=1.0.0
+pathlib  # Built-in
+tempfile  # Built-in
+threading  # Built-in
+queue  # Built-in
+logging  # Built-in
+datetime  # Built-in
+typing  # Built-in
+contextlib  # Built-in
+
+# Optional: Excel export support
+openpyxl>=3.1.0
+
+# Optional: Additional ML libraries
+scikit-learn>=1.3.0
+scipy>=1.11.0
+
+# Development and testing
+pytest>=7.4.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0 
