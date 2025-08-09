@@ -348,7 +348,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-from alert_manager import AlertManager
+
 
 # ========================
 # CONFIGURATION MANAGEMENT
@@ -603,8 +603,8 @@ class AlertManager:
             'confidence': max_confidence,
             'people_count': sum(len(det.boxes) for det in detections)
         }
-
-    def _annotate_frame(self, frame, results):
+    @staticmethod
+    def _annotate_frame(frame, results):
         """Add detection annotations to frame"""
         for result in results:
             for box in result.boxes:
@@ -929,13 +929,28 @@ class ExamVisioUI:
             except Exception as e:
                 logger.error(f"Failed to initialize ExamConfiguration: {str(e)}")
                 self.exam_config = None
-                
+            # Initialize alert manager with error handling
             try:
                 self.alert_manager = AlertManager(self.db_manager)
             except Exception as e:
                 logger.error(f"Failed to initialize AlertManager: {str(e)}")
                 self.alert_manager = None
-                
+            #Initialize ModelManager with error handling
+            try:
+                self.model_manager = ModelManager(Config.MODEL_PATH)
+                logger.info("ModelManager initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize ModelManager: {str(e)}")
+                self.model_manager = None
+                st.error("⚠️ Model loading failed - video processing features are unavailable")    
+            # Initialize DataManager with error handling
+            try:
+                self.data_manager = DataManager()
+                logger.info("DataManager initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize DataManager: {str(e)}")
+                self.data_manager = None
+                st.error("⚠️ Data management features are currently unavailable")
             try:
                 if self.db_manager and self.db_manager.supabase:
                     self.exam_scheduler = ExamScheduler(self.db_manager)
@@ -1122,14 +1137,14 @@ class ExamVisioUI:
             selected = option_menu(
                 menu_title="Navigation",
                 options=[
-                    "🛠️ Exam Configuration",
-                    "📅 Exam Scheduling",
-                    "📡 Live Monitoring",
-                    "📊 Dashboard",
-                    "📈 Analytics Dashboard",
-                    "🕵️ Evidence Review",
-                    "📄 Reports",
-                    "⚙️ System Settings"
+                    "Exam Configuration",
+                    "Exam Scheduling",
+                    "Live Monitoring",
+                    "Dashboard",
+                    "Analytics Dashboard",
+                    "Evidence Review",
+                    "Reports",
+                    "System Settings"
                 ],
                 icons=[
                     "tools",
