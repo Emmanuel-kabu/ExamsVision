@@ -28,7 +28,7 @@ class ExamConfiguration:
             with col2:
                 department = st.text_input("Department*")
                 degree_type = st.selectbox("Degree Type*", ["BSc", "MSc", "PhD", "Other"])
-                year_of_study = st.selectbox("Year of Study*", ["1st Year", "2nd Year", "3rd Year", "4th Year", "Other"])
+                year_of_study = st.selectbox("Year of Study*", ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "6th Year", "7th Year", "8th Year", "Other"])
                 exam_type = st.selectbox("Exam Type*", [
                     "Quiz",
                     "Mid Semester",
@@ -138,9 +138,9 @@ class ExamConfiguration:
                     
                     # Filter exam_data to only include valid columns
                     filtered_exam_data = {k: v for k, v in exam_data.items() if k in valid_columns}
-                    
-                    # Save to exam_configs table
-                    result = self.db_manager.supabase.table("exam_configs").insert(filtered_exam_data).execute()
+
+                    # Save to exams table
+                    result = self.db_manager.supabase.table("exams").insert(filtered_exam_data).execute()
                     
                     if result.data:
                         exam_id = result.data[0]['id']  # Get the new exam config ID
@@ -158,10 +158,10 @@ class ExamConfiguration:
                     st.error(f"An error occurred: {str(e)}")
                     
         # Show configuration preview
-        if st.checkbox("Show Current Configuration"):
+        if st.checkbox("Show Previous Configuration"):
             try:
                 # Get all exam configs
-                configs = self.db_manager.supabase.table("exam_configs").select(
+                configs = self.db_manager.supabase.table("exams").select(
                     "id",
                     "exam_name",
                     "exam_type",
@@ -186,7 +186,7 @@ class ExamConfiguration:
                 
                 if configs.data:
                     # Create a mapping of config_id to scheduled exam data
-                    scheduled_map = {s['exam_config_id']: s for s in scheduled.data}
+                    scheduled_map = {s['exam_id']: s for s in scheduled.data}
                     
                     # Combine the data
                     combined_data = []

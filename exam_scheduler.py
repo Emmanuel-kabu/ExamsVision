@@ -239,18 +239,18 @@ class ExamScheduler:
                                 # Combine date and time
                                 start_datetime = datetime.combine(date, time)
                                 end_datetime = start_datetime + timedelta(minutes=selected_exam['duration'])
-                                
+
                                 # Check for schedule conflicts
                                 schedule_conflicts = self._check_schedule_conflicts(
-                                    start_datetime, 
-                                    end_datetime, 
+                                    start_datetime,
+                                    end_datetime,
                                     selected_exam['venue']
                                 )
-                                
+
                                 if schedule_conflicts:
                                     st.error("Schedule conflict detected! Another exam is scheduled for this time and venue.")
                                     return
-                                
+
                                 # Prepare update data with all required fields
                                 update_data = {
                                     'exam_name': selected_exam['exam_name'],
@@ -265,15 +265,31 @@ class ExamScheduler:
                                     'start_time': start_datetime.isoformat(),
                                     'end_time': end_datetime.isoformat()
                                 }
-                                
+
                                 self.db_manager.update_exam(
                                     selected_exam['id'],
                                     update_data
                                 )
-                                
-                                st.success(f"Exam {selected_exam['exam_name']} scheduled successfully!")
-                                st.rerun()
-                                
+
+                                # Insert into scheduled_exams table
+                                schedule_data = {
+                                    'exam_id': selected_exam['id'],
+                                    'exam_name': selected_exam['exam_name'],
+                                    'course_code': selected_exam['course_code'],
+                                    'start_time': start_datetime.isoformat(),
+                                    'end_time': end_datetime.isoformat(),
+                                    'venue': selected_exam['venue'],
+                                    'instructor': selected_exam['instructor'],
+                                    'total_students': selected_exam['total_students'],
+                                    'status': 'scheduled'
+                                }
+                                insert_result = self.db_manager.supabase.table("scheduled_exams").insert(schedule_data).execute()
+
+                                if hasattr(insert_result, 'error') and insert_result.error:
+                                    st.error(f"Failed to save to scheduled_exams: {insert_result.error}")
+                                else:
+                                    st.success(f"Exam {selected_exam['exam_name']} scheduled successfully!")
+                                    st.rerun()
                             except Exception as e:
                                 logger.error(f"Error scheduling exam: {e}")
                                 st.error(f"Failed to schedule exam: {str(e)}")
@@ -501,3 +517,4 @@ class ExamScheduler:
         except Exception as e:
             logger.error(f"Error cancelling exam: {e}")
             st.error(f"Failed to cancel exam: {str(e)}")
+

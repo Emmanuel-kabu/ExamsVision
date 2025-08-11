@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import logging
+from exam_monitoring import ExamMonitoringSystem
 from contextlib import contextmanager
 import matplotlib.pyplot as plt
 from supabase import create_client, Client
@@ -935,6 +936,16 @@ class ExamVisioUI:
             except Exception as e:
                 logger.error(f"Failed to initialize AlertManager: {str(e)}")
                 self.alert_manager = None
+
+            # Initialize ExamMonitoringSystem with error handling
+            try:
+                self.exam_monitoring = ExamMonitoringSystem(self.db_manager)
+                logger.info("ExamMonitoringSystem initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize ExamMonitoringSystem: {str(e)}")
+                self.exam_monitoring = None
+                
+
             #Initialize ModelManager with error handling
             try:
                 self.model_manager = ModelManager(Config.MODEL_PATH)
@@ -1699,11 +1710,13 @@ class ExamVisioUI:
         # Control buttons
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("Start Monitoring", use_container_width=True):
+            if st.button("Start Monitoring",use_container_width=True):
                 self._start_monitoring(source_type)
+                self.exam_monitoring.start_exam_tracking(st.session_state.current_exam_id)
         with col2:
             if st.button("Stop Monitoring", use_container_width=True):
                 self._stop_monitoring()
+                self.exam_monitoring.stop_exam_tracking(st.session_state.current_exam_id)
         with col3:
             if st.button("End Session", type="primary", use_container_width=True):
                 if 'current_exam_id' in st.session_state:
@@ -1780,7 +1793,7 @@ class ExamVisioUI:
             try:
                 user = sign_in_with_email(email, password)
                 if user:
-                    st.session_state.current_page = "Live Monitoring"
+                    st.session_state.current_page = "Exam Configuration"
                     st.rerun()
             except Exception as e:
                 st.error(f"Sign in failed: {str(e)}")
@@ -1789,7 +1802,7 @@ class ExamVisioUI:
            """Render forgot password form"""
            st.title("Forgot Password")
            email = st.text_input("Email", key="email_forgot")
-           if st.button("Send Reset Link"):
+           if st.button("Sent Reset Link"):
               forget_password(email)
 
     def _render_sign_up(self):
@@ -1802,7 +1815,7 @@ class ExamVisioUI:
             try:
                 user = sign_up_with_email(email, password)
                 if user:
-                    st.session_state.current_page = "Live Monitoring"
+                    st.session_state.current_page = "Exam Configuration"
                     st.rerun()
             except Exception as e:
                 st.error(f"Sign up failed: {str(e)}")
