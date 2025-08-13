@@ -1,5 +1,6 @@
 import streamlit as st
 from datetime import datetime, timedelta
+import pytz
 import logging
 from typing import Dict, Optional
 from database_manager import DatabaseManager, init_supabase
@@ -81,19 +82,22 @@ class ExamConfiguration:
                         st.error("Exam Type is required")
                         return
                     
-                    # Construct start and end datetimes
-                    start_datetime = datetime.combine(start_date, start_time)
-                    end_datetime = start_datetime + timedelta(minutes=duration)
-                    
+                    # Construct start and end datetimes (local naive)
+                    local_start = datetime.combine(start_date, start_time)
+                    local_end = local_start + timedelta(minutes=duration)
+
+                    # Convert to UTC (assume local time is system local time)
+                    local_tz = datetime.now().astimezone().tzinfo
+                    aware_start = local_start.replace(tzinfo=local_tz)
+                    aware_end = local_end.replace(tzinfo=local_tz)
+                    utc_start = aware_start.astimezone(pytz.UTC)
+                    utc_end = aware_end.astimezone(pytz.UTC)
+
                     # Prepare exam data with explicit exam type validation
                     if not isinstance(exam_type, str) or not exam_type.strip():
                         st.error("Invalid exam type selected")
                         return
 
-                    # Use the selected date and time for initial values
-                    initial_start = datetime.combine(start_date, start_time)
-                    initial_end = initial_start + timedelta(minutes=duration)
-                    
                     exam_data = {
                         "exam_name": exam_name,
                         "exam_type": exam_type.strip(),  # Ensure clean string value
@@ -103,8 +107,8 @@ class ExamConfiguration:
                         "degree_type": degree_type,
                         "year_of_study": year_of_study,
                         "total_students": total_students,
-                        "start_time": initial_start.isoformat(),  # Use initial date/time
-                        "end_time": initial_end.isoformat(),      # Calculate end time
+                        "start_time": utc_start.isoformat(),  # Store as UTC
+                        "end_time": utc_end.isoformat(),      # Store as UTC
                         "duration": duration,
                         "status": "configured",  # Start as configured, not scheduled
                         "venue": venue

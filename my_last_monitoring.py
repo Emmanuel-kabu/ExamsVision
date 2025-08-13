@@ -3,10 +3,8 @@ import threading
 import queue
 import numpy as np
 from datetime import datetime, timezone
-from typing import Dict, Optional
-import pandas as pd
+from typing import Dict, Optional, List, Tuple
 import pytz
-import streamlit as st
 
 logger = logging.getLogger(__name__)
 
@@ -15,22 +13,25 @@ class ExamMonitoringSystem:
         self.db_manager = db_manager
         self.video_processor = video_processor
         self.alert_manager = alert_manager
-        
+
+        # Internal tracking
         self._frame_queues: Dict[str, queue.Queue] = {}
         self._stop_events: Dict[str, threading.Event] = {}
         self._processing_threads: Dict[str, threading.Thread] = {}
         self._exam_cache: Dict[str, Dict] = {}
 
-    # ===== Backend Core =====
+    # --------------------------
+    # Public API
+    # --------------------------
     def start_exam_tracking(self, exam_id: str) -> bool:
-        """Start processing frames for a specific exam."""
+        """Start processing frames for a given exam."""
         if exam_id in self._processing_threads:
             logger.warning("Exam tracking already running for %s", exam_id)
             return True
 
         exam = self.get_active_exam(exam_id)
         if not exam:
-            logger.error("Exam not found: %s", exam_id)
+            logger.error("Cannot start tracking: exam not found %s", exam_id)
             return False
 
         q = queue.Queue(maxsize=20)
@@ -47,15 +48,16 @@ class ExamMonitoringSystem:
         self._exam_cache[exam_id] = exam
 
         t.start()
-        logger.info("Started tracking for exam %s", exam_id)
+        logger.info("Started exam tracking for %s", exam_id)
         return True
 
     def stop_exam_tracking(self, exam_id: str) -> bool:
-        """Stop tracking an exam and save metrics."""
+        """Stop processing frames for a given exam and save metrics."""
         if exam_id not in self._stop_events:
             return False
 
         self._stop_events[exam_id].set()
+
         thread = self._processing_threads.get(exam_id)
         if thread:
             thread.join(timeout=5.0)
@@ -64,6 +66,7 @@ class ExamMonitoringSystem:
         self._frame_queues.pop(exam_id, None)
         self._processing_threads.pop(exam_id, None)
         self._stop_events.pop(exam_id, None)
+        self._exam_cache.pop(exam_id, None)
 
         # Save metrics
         try:
@@ -74,11 +77,10 @@ class ExamMonitoringSystem:
         except Exception as e:
             logger.exception("Error saving metrics: %s", e)
 
-        self._exam_cache.pop(exam_id, None)
         return True
 
     def attach_frame(self, exam_id: str, frame) -> bool:
-        """Attach a frame for processing."""
+        """Attach a frame to the queue for this exam."""
         q = self._frame_queues.get(exam_id)
         if not q:
             return False
@@ -88,8 +90,48 @@ class ExamMonitoringSystem:
         except queue.Full:
             return False
 
+    def list_exams(self) -> Tuple[List[Dict], List[Dict]]:
+        """Return current and upcoming exams."""
+        now = datetime.now(pytz.UTC)
+        scheduled = self.db_manager.supabase.table("scheduled_exams") \
+            .select("*") \
+            .gte("end_time", now.isoformat()) \
+            .execute()
+
+        if not scheduled.data:
+            return [], []
+
+        config_ids = [e['exam_id'] for e in scheduled.data]
+        configs = self.db_manager.supabase.table("exams") \
+            .select("*") \
+            .in_("id", config_ids) \
+            .execute()
+
+        config_map = {c['id']: c for c in configs.data}
+        current_exams, upcoming_exams = [], []
+
+        for exam in scheduled.data:
+            cfg = config_map.get(exam['exam_id'])
+            if not cfg:
+                continue
+            merged = {**cfg, **exam}
+            start_time = datetime.fromisoformat(exam['start_time'])
+            end_time = datetime.fromisoformat(exam['end_time'])
+            if start_time <= now <= end_time:
+                current_exams.append(merged)
+            elif start_time > now:
+                upcoming_exams.append(merged)
+
+        return current_exams, upcoming_exams
+
+    # --------------------------
+    # Internal processing
+    # --------------------------
     def _processing_loop(self, exam_id: str, q: queue.Queue, stop_ev: threading.Event, exam_meta: Dict):
-        """Process frames and save detections for the given exam."""
+        """Consume frames from queue and process detections."""
+        settings = exam_meta.get("monitoring_settings", {}) or {}
+        confidence_threshold = settings.get("confidence_threshold", 0.5)
+
         while not stop_ev.is_set():
             try:
                 frame = q.get(timeout=0.5)
@@ -102,14 +144,12 @@ class ExamMonitoringSystem:
                 logger.exception("Video processor failed: %s", e)
                 continue
 
-            settings = exam_meta.get("monitoring_settings", {}) or {}
-            conf_thresh = settings.get("confidence_threshold", 0.5)
-
             for det in detections or []:
                 conf = float(getattr(det, "confidence", 0.0))
-                if conf < conf_thresh:
+                if conf < confidence_threshold:
                     continue
 
+                # Insert detection into DB
                 row = {
                     "exam_id": exam_id,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -121,23 +161,28 @@ class ExamMonitoringSystem:
                 self.db_manager.supabase.table("detections").insert(row).execute()
 
     def get_active_exam(self, exam_id: str) -> Optional[Dict]:
-        """Get exam + schedule details."""
+        """Fetch exam config and schedule details."""
         try:
-            scheduled = self.db_manager.supabase.table("scheduled_exams").select("*").eq("id", exam_id).single().execute()
+            scheduled = self.db_manager.supabase.table("scheduled_exams") \
+                .select("*").eq("id", exam_id).single().execute()
             if not scheduled.data:
                 return None
-            config = self.db_manager.supabase.table("exams").select("*").eq("id", scheduled.data["exam_id"]).single().execute()
+
+            config = self.db_manager.supabase.table("exams") \
+                .select("*").eq("id", scheduled.data["exam_id"]).single().execute()
             if not config.data:
                 return None
+
             return {**config.data, **scheduled.data}
         except Exception:
             logger.exception("get_active_exam failed")
             return None
 
     def calculate_exam_metrics(self, exam_id: str) -> Dict:
-        """Aggregate detections into metrics."""
+        """Calculate summary statistics for detections."""
         try:
-            result = self.db_manager.supabase.table("detections").select("*").eq("exam_id", exam_id).execute()
+            result = self.db_manager.supabase.table("detections") \
+                .select("*").eq("exam_id", exam_id).execute()
             detections = result.data or []
             total_detections = len(detections)
             cheating_count = sum(1 for d in detections if d["detection_type"] != "good_behavior")
@@ -161,48 +206,9 @@ class ExamMonitoringSystem:
             logger.exception("calculate_exam_metrics failed")
             return {}
 
-    # ===== UI =====
-    def render_monitoring_interface(self):
-        """List active and upcoming exams."""
-        now = datetime.now(pytz.UTC)
-        scheduled = self.db_manager.supabase.table("scheduled_exams").select("*").gte("end_time", now.isoformat()).execute()
-        if not scheduled.data:
-            st.info("No active or upcoming exams found")
-            return
-
-        config_ids = [e['exam_id'] for e in scheduled.data]
-        configs = self.db_manager.supabase.table("exams").select("*").in_("id", config_ids).execute()
-        config_map = {c['id']: c for c in configs.data}
-
-        st.header("🟢 Current Exams")
-        for exam in scheduled.data:
-            cfg = config_map.get(exam['exam_id'])
-            if not cfg:
-                continue
-            merged = {**cfg, **exam}
-            start_time = datetime.fromisoformat(exam['start_time'])
-            end_time = datetime.fromisoformat(exam['end_time'])
-
-            if start_time <= now <= end_time:
-                st.subheader(f"{merged['exam_name']} - {merged['course_code']}")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"Venue: {merged['venue']}")
-                    st.write(f"Instructor: {merged['instructor']}")
-                with col2:
-                    st.write(f"Students: {merged['total_students']}")
-
-                is_running = merged['id'] in self._processing_threads
-                if not is_running:
-                    if st.button(f"▶️ Start {merged['exam_name']}", key=f"start_{merged['id']}"):
-                        self.start_exam_tracking(merged['id'])
-                        st.session_state.current_exam_id = merged['id']
-                        st.success(f"Started {merged['exam_name']}")
-                else:
-                    if st.button(f"⏹ Stop {merged['exam_name']}", key=f"stop_{merged['id']}"):
-                        self.stop_exam_tracking(merged['id'])
-                        st.success(f"Stopped {merged['exam_name']}")
-
-
-
-
+    def _group_by_type(self, detections):
+        counts = {}
+        for d in detections:
+            t = d.get("detection_type", "unknown")
+            counts[t] = counts.get(t, 0) + 1
+        return counts

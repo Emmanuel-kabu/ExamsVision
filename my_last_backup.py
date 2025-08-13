@@ -1,6 +1,7 @@
 import os
 import cv2
 from streamlit_option_menu import option_menu
+import pytz
 from datetime import datetime, timedelta, date
 import time
 import queue
@@ -938,12 +939,7 @@ class ExamVisioUI:
                 self.alert_manager = None
 
             # Initialize ExamMonitoringSystem with error handling
-            try:
-                self.exam_monitoring = ExamMonitoringSystem(self.db_manager)
-                logger.info("ExamMonitoringSystem initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize ExamMonitoringSystem: {str(e)}")
-                self.exam_monitoring = None
+        
                 
 
             #Initialize ModelManager with error handling
@@ -1613,174 +1609,109 @@ class ExamVisioUI:
         """Render the current active page"""
         self.pages[st.session_state.current_page]()
 
+    
     def _render_live_monitoring(self):
-        """Live monitoring page"""
-        # Initialize the monitoring system if not already done
-        if not hasattr(self, 'monitoring_system'):
-            self.monitoring_system = ExamMonitoringSystem(
-                db_manager=self.db_manager,
-                video_processor=self.video_processor,
-                alert_manager=self.alert_manager
-            )
-        
-        # Render the monitoring interface
-        self.monitoring_system.render_monitoring_interface()
-        
-        # Initialize behavior analyzer if not exists
-        if 'behavior_analyzer' not in st.session_state:
-            from behavior_analyzer import BehaviorAnalyzer
-            st.session_state.behavior_analyzer = BehaviorAnalyzer()
-            
-        # Proctor Control Panel
+        """Live monitoring page with linked exam tracking"""
+
+    # 1. Init monitoring system once
+        if not hasattr(self, 'exam_monitoring'):
+           self.exam_monitoring = ExamMonitoringSystem(
+            db_manager=self.db_manager,
+            video_processor=self.video_processor,
+            alert_manager=self.alert_manager
+        )
+
+
+
+    # 2. Get active/upcoming exams from DB
+        now = datetime.now(pytz.UTC).isoformat()
+        scheduled = self.db_manager.supabase.table("scheduled_exams") \
+        .select("*").gte("end_time", now).execute()
+    
+        if not scheduled.data:
+          st.info("No active or upcoming exams")
+          return
+
+    # Merge with exam configs
+        config_ids = [e['exam_id'] for e in scheduled.data]
+        configs = self.db_manager.supabase.table("exams") \
+        .select("*").in_("id", config_ids).execute()
+        config_map = {c['id']: c for c in configs.data}
+
+    # Build merged exam list
+        exams = []
+        for exam in scheduled.data:
+           cfg = config_map.get(exam['exam_id'])
+           if cfg:
+             exams.append({**cfg, **exam})
+
+        if "behavior_analyzer" not in st.session_state:
+           from behavior_analyzer import BehaviorAnalyzer
+           st.session_state.behavior_analyzer = BehaviorAnalyzer()     
+
+    # 3. Show exam selection
+        st.subheader("📌 Select Exam to Monitor")
+        exam_options = {f"{e['exam_name']} ({e['course_code']})": e['id'] for e in exams}
+        selected_exam_label = st.selectbox("Choose Exam", list(exam_options.keys()))
+        selected_exam_id = exam_options[selected_exam_label]
+        st.session_state.current_exam_id = selected_exam_id
+
+    # 4. Show exam details
+        sel_exam = next(e for e in exams if e['id'] == selected_exam_id)
+        st.markdown(f"""
+         **Venue:** {sel_exam['venue']}  
+         **Instructor:** {sel_exam['instructor']}  
+         **Students:** {sel_exam['total_students']}  
+         **Start Time:** {sel_exam['start_time']}  
+         **End Time:** {sel_exam['end_time']}
+      """)
+
+    # 5. Video source selection
+        source_type = st.radio("Video Source", ["Webcam", "File"], key="monitor_video_source")
+
+    # 6. Control buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("▶️ Start Monitoring", use_container_width=True):
+                if self._start_monitoring(source_type):
+                    self.exam_monitoring.start_exam_tracking(selected_exam_id)
+                    st.success(f"Monitoring started for {sel_exam['exam_name']}")
+                else:
+                    st.error("Failed to start monitoring")
+
+
+        with col2:
+            if st.button("⏹ Stop Monitoring", use_container_width=True):
+                self._stop_monitoring()
+                self.exam_monitoring.stop_exam_tracking(selected_exam_id)
+                st.warning(f"Monitoring stopped for {sel_exam['exam_name']}")
+
+    # 7. Proctor Control Panel (your old settings)
         with st.expander("🎛️ Proctor Control Panel", expanded=True):
             col1, col2, col3 = st.columns(3)
-            
             with col1:
                 st.subheader("🎥 Camera Controls")
-                camera_mode = st.selectbox(
-                    "Camera Mode",
-                    ["Standard", "High Resolution", "Low Light", "Motion Focus"]
-                )
+                st.selectbox("Camera Mode", ["Standard", "High Resolution", "Low Light", "Motion Focus"])
                 st.checkbox("Enable Audio Monitoring", key="audio_monitoring")
                 st.checkbox("Enable Motion Detection", key="motion_detection")
-                
             with col2:
                 st.subheader("🚨 Alert Settings")
-                alert_sensitivity = st.slider("Alert Sensitivity", 0.0, 1.0, 0.6)
-                min_incident_duration = st.number_input("Min Incident Duration (s)", 1, 60, 3)
-                consecutive_alerts = st.number_input("Consecutive Alerts for Action", 1, 10, 3)
-                
+                st.slider("Alert Sensitivity", 0.0, 1.0, 0.6)
+                st.number_input("Min Incident Duration (s)", 1, 60, 3)
+                st.number_input("Consecutive Alerts for Action", 1, 10, 3)
             with col3:
                 st.subheader("🤖 AI Assistant")
                 st.checkbox("Enable Smart Tracking", key="smart_tracking")
                 st.checkbox("Auto-zoom on Incidents", key="auto_zoom")
-                behavior_threshold = st.slider("Behavior Analysis Threshold", 0.0, 1.0, 0.7)
-        
-        # Session info
-        if 'current_exam_id' in st.session_state:
-            exam = self.supabase.table("exams").select("*").eq('id', st.session_state.current_exam_id).execute()
-            if exam.data:
-                exam_data = exam.data[0]
-                st.markdown(f"""
-                    ### 📝 Current Session
-                    - **Exam**: {exam_data['exam_name']}
-                    - **Course**: {exam_data['course_code']}
-                    - **Department**: {exam_data['department']}
-                    - **Instructor**: {exam_data['instructor']}
-                    - **Students**: {exam_data['total_students']}
-                    """)
-                
-                # Session metrics
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Session Duration", f"{(datetime.now() - datetime.fromisoformat(exam_data['start_time'])).seconds // 60}m")
-                with col2:
-                    st.metric("Detections", len(st.session_state.detection_history))
-                with col3:
-                    st.metric("Alerts", len(st.session_state.alert_history))
-                with col4:
-                    st.metric("Alert Rate", f"{len(st.session_state.alert_history) / max(1, len(st.session_state.detection_history)):.2%}")
-                
-                # Add exam progress
-                exam_start = datetime.fromisoformat(exam_data['start_time'])
-                exam_end = datetime.fromisoformat(exam_data['end_time'])
-                total_duration = (exam_end - exam_start).total_seconds() / 60
-                elapsed_duration = (datetime.now() - exam_start).total_seconds() / 60
-                progress = min(100, (elapsed_duration / total_duration) * 100)
-                
-                # Display progress bar
-                st.progress(progress / 100)
-                st.write(f"⏱️ Time Remaining: {max(0, int(total_duration - elapsed_duration))} minutes")
-                
-                # Status indicator
-                status_col1, status_col2 = st.columns([1, 3])
-                with status_col1:
-                    if progress >= 100:
-                        st.error("🔴 Exam Ended")
-                    elif len(st.session_state.alert_history) > 0:
-                        st.warning("🟡 Alerts Detected")
-                    else:
-                        st.success("🟢 Normal Operation")
-                with status_col2:
-                    st.write(f"Current Status: {'High Alert' if len(st.session_state.alert_history) > 5 else 'Moderate Alert' if len(st.session_state.alert_history) > 0 else 'Normal'}")
-        
-        # Video source selection
-        source_type = st.radio("Video Source", ["Webcam", "File"])
-        
-        # Control buttons
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("Start Monitoring",use_container_width=True):
-                self._start_monitoring(source_type)
-                self.exam_monitoring.start_exam_tracking(st.session_state.current_exam_id)
-        with col2:
-            if st.button("Stop Monitoring", use_container_width=True):
-                self._stop_monitoring()
-                self.exam_monitoring.stop_exam_tracking(st.session_state.current_exam_id)
-        with col3:
-            if st.button("End Session", type="primary", use_container_width=True):
-                if 'current_exam_id' in st.session_state:
-                    try:
-                        # Save detection history to database
-                        if hasattr(st.session_state, 'detection_history'):
-                            detection_records = []
-                            for _, row in st.session_state.detection_history.iterrows():
-                                detection_records.append({
-                                    'exam_id': st.session_state.current_exam_id,
-                                    'timestamp': row['timestamp'].isoformat(),
-                                    'cheating': row['cheating'],
-                                    'good': row['good'],
-                                    'people_count': row.get('people_count', 0),
-                                    'confidence': row.get('confidence', 0.0)
-                                })
-                            if detection_records:
-                                self.db_manager.supabase.table("detections").insert(detection_records).execute()
-                        
-                        # Save alerts to database
-                        if hasattr(st.session_state, 'alert_history'):
-                            alert_records = []
-                            for alert in st.session_state.alert_history:
-                                alert_records.append({
-                                    'exam_id': st.session_state.current_exam_id,
-                                    'timestamp': alert['timestamp'].isoformat(),
-                                    'alert_type': alert['type'],
-                                    'confidence': alert['confidence'],
-                                    'evidence_path': alert.get('image_path', ''),
-                                    'details': alert.get('details', ''),
-                                    'reviewed': False
-                                })
-                            if alert_records:
-                                self.db_manager.supabase.table("alerts").insert(alert_records).execute()
-                        
-                        # Update exam status
-                        self.db_manager.update_exam(
-                            st.session_state.current_exam_id, 
-                            {
-                                'status': 'completed',
-                                'end_time': datetime.now().isoformat(),
-                                'total_detections': len(st.session_state.detection_history) if hasattr(st.session_state, 'detection_history') else 0,
-                                'total_alerts': len(st.session_state.alert_history) if hasattr(st.session_state, 'alert_history') else 0,
-                                'cheating_incidents': st.session_state.detection_counts.get('cheating', 0),
-                                'normal_behavior': st.session_state.detection_counts.get('good', 0)
-                            }
-                        )
-                        
-                        st.success("Exam session completed and report data saved successfully!")
-                        time.sleep(2)
-                        
-                        # Clear session state
-                        st.session_state.pop('current_exam_id', None)
-                        st.session_state.pop('detection_history', None)
-                        st.session_state.pop('alert_history', None)
-                        st.session_state.detection_counts = {'cheating': 0, 'good': 0}
-                        
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"Error saving session data: {str(e)}")
-                        logger.error(f"Error saving session data: {e}")
-        
-        # Video display
+                st.slider("Behavior Analysis Threshold", 0.0, 1.0, 0.7)
+
+    # 8. If monitoring is active, attach frames to exam
+        if self.video_processor.is_monitoring():  # You may need to implement this check
+           frame = self.video_processor.get_latest_frame()  # Implement this to grab last frame
+           if frame is not None:
+               self.exam_monitoring.attach_frame(selected_exam_id, frame)
+
+    # 9. Video feed
         self._render_video_feed()
 
     def _render_sign_in(self):
@@ -1927,116 +1858,133 @@ class ExamVisioUI:
             st.error("Failed to stop monitoring")
 
     def _render_video_feed(self):
-        """Display live video feed"""
+        """Display live video feed and attach frames to the exam tracking system."""
+
+        if not hasattr(self, 'exam_monitoring'):
+           self.exam_monitoring = ExamMonitoringSystem(
+            db_manager=self.db_manager,
+            video_processor=self.video_processor,
+            alert_manager=self.alert_manager
+        )
+           
         if st.session_state.video_processor.is_monitoring():
             frame_placeholder = st.empty()
-            
-            # Initialize analyzers if not exists
+
+
+        # Initialize analyzers if not exists
             if 'anomaly_detector' not in st.session_state:
                 from anomaly_detector import AnomalyDetector
                 st.session_state.anomaly_detector = AnomalyDetector()
-            
+
+            if 'behavior_analyzer' not in st.session_state:
+                from behavior_analyzer import BehaviorAnalyzer
+                st.session_state.behavior_analyzer = BehaviorAnalyzer()
+
             while st.session_state.video_processor.is_monitoring():
-                frame = st.session_state.video_processor.get_latest_frame()
-                if frame is not None:
-                    # Run detection
+                 frame = st.session_state.video_processor.get_latest_frame()
+                 if frame is not None:
+
+                # ✅ Send frame to exam tracking thread
+                    if 'current_exam_id' in st.session_state:
+                       self.exam_monitoring.attach_frame(st.session_state.current_exam_id, frame)
+
+                # Run detection
                     results = self.model_manager.detect(frame)
                     counts = self.data_manager.update_detections(results)
-                    
-                    # Prepare detection data for analysis
-                    # Extract confidence values from boxes in results
+
+                # Extract confidence values from boxes in results
                     confidence_values = []
                     for det in results:
-                        if det.boxes is not None:
-                            for box in det.boxes:
-                                confidence_values.append(float(box.conf))
-                    
+                       if det.boxes is not None:
+                          for box in det.boxes:
+                            confidence_values.append(float(box.conf))
+
                     current_data = {
-                        'confidence': max(confidence_values) if confidence_values else 0.0,
-                        'people_count': sum(len(det.boxes) for det in results if det.boxes is not None),
+                       'confidence': max(confidence_values) if confidence_values else 0.0,
+                       'people_count': sum(len(det.boxes) for det in results if det.boxes is not None),
                         'motion_level': st.session_state.video_processor.get_motion_level(),
                         'alert_frequency': len(st.session_state.alert_history) / max(1, len(st.session_state.detection_history)),
-                        'duration': 0  # Will be updated if alert is created
-                    }
-                    
-                    # Run anomaly detection
+                        'duration': 0
+                }
+
+                # Run anomaly detection
                     anomaly_result = st.session_state.anomaly_detector.detect_anomalies(current_data)
-                    
-                    # Run behavior analysis
+
+                # Run behavior analysis
                     behavior_analysis = st.session_state.behavior_analyzer.analyze_behavior_patterns(
-                        st.session_state.detection_history)
+                    st.session_state.detection_history
+                )
                     
-                    # Check for alerts with enhanced criteria
+
+                # Check for alerts with enhanced criteria
                     if ((counts['cheating'] > 0 and 
-                         st.session_state.video_processor.should_trigger_alert()) or
+                        st.session_state.video_processor.should_trigger_alert()) or
                         anomaly_result['is_anomaly']):
-                        
+
                         alert_data = self.alert_manager.create_alert(frame, results)
-                        # Add anomaly and behavior analysis data
                         alert_data.update({
-                            'anomaly_score': anomaly_result['score'],
-                            'anomaly_severity': anomaly_result['severity'],
-                            'behavior_risk_score': behavior_analysis.get('risk_score', 0),
-                            'insights': anomaly_result['insights']
-                        })
+                        'anomaly_score': anomaly_result['score'],
+                        'anomaly_severity': anomaly_result['severity'],
+                        'behavior_risk_score': behavior_analysis.get('risk_score', 0),
+                        'insights': anomaly_result['insights']
+                    })
                         self.data_manager.add_alert(alert_data)
-                        
-                        # Queue alert for syncing
+
+                    # Queue alert for syncing
                         if 'current_exam_id' in st.session_state:
-                            sync_alert_data = {
+                           sync_alert_data = {
+                            'exam_id': st.session_state.current_exam_id,
+                            'detection_id': alert_data.get('id', None),
+                            'timestamp': alert_data['timestamp'].isoformat(),
+                            'alert_type': 'cheating',
+                            'confidence': float(alert_data['confidence']),
+                            'evidence_path': alert_data['image_path'],
+                            'reviewed': False
+                           }
+                           st.session_state.sync_manager.queue_alert(sync_alert_data)
+
+                          # Add notification with severity level
+                           severity = "error" if alert_data['confidence'] > 0.8 else "warning"
+                           self.notification_manager.add_notification(
+                            f"🚨 Cheating detected with {alert_data['confidence']:.0%} confidence",
+                            level=severity,
+                              data={
                                 'exam_id': st.session_state.current_exam_id,
-                                'detection_id': alert_data['id'],
-                                'timestamp': alert_data['timestamp'].isoformat(),
-                                'alert_type': 'cheating',
-                                'confidence': float(alert_data['confidence']),
-                                'evidence_path': alert_data['image_path'],
-                                'reviewed': False
-                            }
-                            st.session_state.sync_manager.queue_alert(sync_alert_data)
-                            
-                            # Add notification with severity level
-                            severity = "error" if alert_data['confidence'] > 0.8 else "warning"
-                            self.notification_manager.add_notification(
-                                f"🚨 Cheating detected with {alert_data['confidence']:.0%} confidence",
-                                level=severity,
-                                data={
-                                    'exam_id': st.session_state.current_exam_id,
-                                    'alert_id': alert_data['id'],
-                                    'confidence': alert_data['confidence']
+                                'alert_id': alert_data.get('id', None),
+                                'confidence': alert_data['confidence']
                                 }
-                            )
-                            
+                          )
+
                             # Update incident patterns
-                            hour = alert_data['timestamp'].hour
-                            location = f"Camera {st.session_state.video_processor.get_camera_id()}"
-                            
-                            # Update time patterns
-                            st.session_state.incident_patterns['time_patterns'][hour] = \
-                                st.session_state.incident_patterns['time_patterns'].get(hour, 0) + 1
-                                
-                            # Update location patterns
-                            st.session_state.incident_patterns['frequent_locations'][location] = \
-                                st.session_state.incident_patterns['frequent_locations'].get(location, 0) + 1
-                        
+                           hour = alert_data['timestamp'].hour
+                           location = "Default Camera"
+
+                           st.session_state.incident_patterns['time_patterns'][hour] = \
+                              st.session_state.incident_patterns['time_patterns'].get(hour, 0) + 1
+
+                           st.session_state.incident_patterns['frequent_locations'][location] = \
+                              st.session_state.incident_patterns['frequent_locations'].get(location, 0) + 1
+
                         if st.session_state.email_alerts:
-                            threading.Thread(
-                                target=self.alert_manager.send_email_alert,
-                                args=(alert_data,),
-                                daemon=True
+                           threading.Thread(
+                            target=self.alert_manager.send_email_alert,
+                            args=(alert_data,),
+                            daemon=True
                             ).start()
-                        
+
                         st.session_state.video_processor.last_alert_time = time.time()
-                    
+
                     # Display frame
                     annotated_frame = self.alert_manager._annotate_frame(frame.copy(), results)
                     frame_placeholder.image(
-                        cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB),
-                        channels="RGB"
-                    )
-                
-                time.sleep(1/Config.TARGET_FPS)
+                    cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB),
+                    channels="RGB"
+                     )
+
+            time.sleep(1/Config.TARGET_FPS)
         else:
             st.info("Monitoring not active")
+
 
             
     def _update_metrics(self, counts, people_count):
