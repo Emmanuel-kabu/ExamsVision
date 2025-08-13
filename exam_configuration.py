@@ -4,6 +4,7 @@ import pytz
 import logging
 from typing import Dict, Optional
 from database_manager import DatabaseManager, init_supabase
+from database_operations import DatabaseOperations, init_supabase
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 class ExamConfiguration:
     """Handles exam configuration and scheduling"""
     
-    def __init__(self, db_manager: DatabaseManager):
+    def __init__(self, db_manager: DatabaseOperations):
         self.db_manager = db_manager
         
     def render_exam_form(self):

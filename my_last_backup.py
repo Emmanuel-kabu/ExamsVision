@@ -32,6 +32,7 @@ from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from PIL import Image
 import logging
+from database_operations import DatabaseOperations, init_supabase
 from database_manager import DatabaseManager, init_supabase
 from notification_manager import NotificationManager
 from exam_configuration import ExamConfiguration
@@ -909,8 +910,8 @@ class ExamVisioUI:
                 test_response = self.supabase.table('exams').select('count').limit(1).execute()
                 if not test_response:
                     raise ConnectionError("Could not verify database access")
-                    
-                self.db_manager = DatabaseManager(self.supabase)
+
+                self.db_manager = DatabaseOperations(self.supabase)
                 logger.info("DatabaseManager initialized successfully")
             except Exception as e:
                 error_msg = f"Failed to initialize DatabaseManager: {str(e)}"

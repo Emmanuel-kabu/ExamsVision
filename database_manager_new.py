@@ -81,6 +81,16 @@ class SupabaseManager:
 
 
 class DatabaseManager:
+    def create_notification(self, notification_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Add a new notification record to the notifications table."""
+        try:
+            result = self._safe_query(
+                self.supabase.table("notifications").insert(notification_data)
+            )
+            return result.get('data', [None])[0]
+        except Exception as e:
+            logger.error(f"Error adding notification: {str(e)}")
+            return None
     """Handles all database operations with proper error handling"""
     
     def __init__(self, supabase_client: Client):

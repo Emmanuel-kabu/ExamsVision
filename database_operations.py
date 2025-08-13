@@ -1,10 +1,61 @@
 import logging
 from datetime import datetime
+from dotenv import load_dotenv
+from supabase import Client, create_client
+import os 
 from typing import Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+load_dotenv()
+
+def init_supabase() -> Client:
+    """Initialize Supabase client"""
+    # Get Supabase credentials
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    
+    if not url or not key:
+        raise ValueError("Supabase URL and Key must be set in .env file")
+        
+    return create_client(url, key)
+
+logger = logging.getLogger(__name__)
+
 class DatabaseOperations:
+
+    def __init__(self, supabase: Client):
+        self.supabase = supabase
+
+
+    def _safe_query(self, query):
+        """
+        Execute a query with proper error handling and consistent return format.
+        Args:
+            query: Supabase query object
+        Returns:
+            Dictionary containing response data or error information
+        """
+        try:
+            response = query.execute()
+            if hasattr(response, 'data'):
+                return {'data': response.data}
+            elif isinstance(response, dict) and 'data' in response:
+                return response
+            return {'data': response}
+        except Exception as e:
+            logger.error(f"Query execution failed: {str(e)}")
+            return {'error': str(e), 'data': []}
+        
+    def create_notification(self, notification_data: dict) -> dict:
+        """Create a new notification record in the notifications table."""
+        try:
+            result = self.supabase.table('notifications').insert(notification_data).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Failed to create notification: {e}")
+            raise
+
     def save_exam_report(self, report_summary: Dict) -> Dict:
         """Save a generated exam report summary to the exam_reports table (for compatibility with report generator)."""
         try:
@@ -290,3 +341,69 @@ class DatabaseOperations:
                 'recent_alerts': [],
                 'upcoming_exams': []
             }
+        
+    def get_exam(self, exam_id: str) -> Optional[Dict]:
+        """Get exam by ID"""
+        try:
+            result = self.supabase.table("exams").select("*").eq("id", exam_id).execute()
+            return result.data[0] if result and result.data else None
+        except Exception as e:
+            logger.error(f"Error getting exam: {e}")
+            raise
+    
+    def get_exams_by_status(self, status: str) -> List[Dict]:
+        """Get all exams with specific status"""
+        try:
+            result = self.supabase.table("exams") \
+                .select("*") \
+                .eq("status", status) \
+                .order("start_time", desc=False) \
+                .execute()
+            return result.data if result else []
+        except Exception as e:
+            logger.error(f"Error getting exams by status: {e}")
+            raise  
+
+    def add_detection(self, detection_data: Dict) -> Dict:
+        """Add a new detection record"""
+        try:
+            result = self.supabase.table("detections").insert(detection_data).execute()
+            return result.data[0] if result and result.data else {}
+        except Exception as e:
+            logger.error(f"Error adding detection: {e}")
+            raise
+            
+    def add_alert(self, alert_data: Dict) -> Dict:
+        """Add a new alert record"""
+        try:
+            result = self.supabase.table("alerts").insert(alert_data).execute()
+            return result.data[0] if result and result.data else {}
+        except Exception as e:
+            logger.error(f"Error adding alert: {e}")
+            raise     
+
+
+    def get_exam_detections(self, exam_id: str) -> List[Dict]:
+        """Get all detections for a specific exam"""
+        try:
+            result = self.supabase.table("detections") \
+                .select("*") \
+                .eq("exam_id", exam_id) \
+                .order("timestamp", desc=False) \
+                .execute()
+            return result.data if result else []
+        except Exception as e:
+            logger.error(f"Error getting exam detections: {e}")
+            raise   
+
+    def update_exam(self, exam_id: str, updates: Dict) -> Dict:
+        """Update exam data"""
+        try:
+            result = self.supabase.table("exams") \
+                .update(updates) \
+                .eq("id", exam_id) \
+                .execute()
+            return result.data[0] if result and result.data else {}
+        except Exception as e:
+            logger.error(f"Error updating exam: {e}")
+            raise       
