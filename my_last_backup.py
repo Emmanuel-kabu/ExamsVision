@@ -26,14 +26,12 @@ from alert_manager import AlertManager
 from video_processor import VideoProcessor
 from sync_manager import SyncManager
 from exam_scheduler import ExamScheduler
-from report_generator import ReportGenerator
 from AUTH import sign_in_with_email, sign_up_with_email, sign_out, forget_password, auth_screen
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from PIL import Image
 import logging
 from database_operations import DatabaseOperations, init_supabase
-from database_manager import DatabaseManager, init_supabase
 from notification_manager import NotificationManager
 from exam_configuration import ExamConfiguration
 from alert_manager import AlertManager
@@ -45,6 +43,7 @@ from yaml.loader import SafeLoader
 import streamlit_authenticator as stauth
 from ultralytics import YOLO
 import torch
+from report_generator import render_report_page
 from AUTH import sign_in_with_email, sign_up_with_email, sign_out, forget_password, auth_screen
 from exam_monitoring import ExamMonitoringSystem
 from video_processor import VideoProcessor  
@@ -981,11 +980,11 @@ class ExamVisioUI:
                             st.experimental_rerun()
                 self.exam_scheduler = PlaceholderScheduler()
                 
-            try:
-                self.report_generator = ReportGenerator(self.db_manager)
-            except Exception as e:
-                logger.error(f"Failed to initialize ReportGenerator: {str(e)}")
-                self.report_generator = None
+            #try:
+             #   self.report_generator = ReportGenerator(self.db_manager)
+           # except Exception as e:
+             #   logger.error(f"Failed to initialize ReportGenerator: {str(e)}")
+              #  self.report_generator = None
             
             # Initialize video processor with error handling
             try:
@@ -1076,7 +1075,6 @@ class ExamVisioUI:
         # Store the functions as instance variables
         self.configure_examination = self.exam_config.render_exam_form
         self.schedule_exam = self.exam_scheduler.render_scheduler
-        self.generate_report = self.report_generator.render_report_page
 
         # Store the pages dictionary
         self.pages = {
@@ -1086,7 +1084,7 @@ class ExamVisioUI:
             "Live Monitoring": self._render_live_monitoring,
             "Analytics Dashboard": self._render_analytics,
             "Evidence Review": self._render_evidence,
-            "Reports": self.generate_report,
+            "Reports": self.render_report,
             "System Settings": self._render_settings
         }
         
@@ -2153,32 +2151,98 @@ class ExamVisioUI:
             
             # Trend Analysis
             st.subheader("📊 Trend Analysis")
-            alert_counts = {}
-            for alert in current_alerts:
-                date = alert['timestamp'].date()
-                alert_counts[date] = alert_counts.get(date, 0) + 1
-            
-            if len(alert_counts) > 1:
-                dates = list(alert_counts.keys())
-                counts = list(alert_counts.values())
-                
-                fig, ax = plt.subplots(figsize=(10, 4))
-                ax.plot(dates, counts, marker='o')
-                ax.set_title('Incident Trends Over Time')
-                ax.set_xlabel('Date')
-                ax.set_ylabel('Number of Incidents')
-                plt.xticks(rotation=45)
-                st.pyplot(fig)
-                
-                # Calculate trend
-                if counts[-1] > counts[0]:
-                    st.warning("⚠️ Incident rate is increasing")
-                elif counts[-1] < counts[0]:
-                    st.success("✅ Incident rate is decreasing")
+            if len(current_alerts) > 0:
+                # Convert to DataFrame for flexible grouping
+                alert_df = pd.DataFrame(current_alerts)
+                if not pd.api.types.is_datetime64_any_dtype(alert_df['timestamp']):
+                    alert_df['timestamp'] = pd.to_datetime(alert_df['timestamp'])
+
+                # User selects trend granularity
+                trend_granularity = st.selectbox(
+                    "Trend Granularity", ["Hourly", "Daily", "Rolling (3h)"])
+
+                if trend_granularity == "Hourly":
+                    trend_series = alert_df.groupby(alert_df['timestamp'].dt.hour).size()
+                    x_label = 'Hour of Day'
+                elif trend_granularity == "Daily":
+                    trend_series = alert_df.groupby(alert_df['timestamp'].dt.date).size()
+                    x_label = 'Date'
+                else:  # Rolling (3h)
+                    alert_df = alert_df.sort_values('timestamp')
+                    alert_df.set_index('timestamp', inplace=True)
+                    trend_series = alert_df['confidence'].rolling('3h').count().resample('1h').max().fillna(0)
+                    x_label = 'Time (3h rolling)'
+
+                if len(trend_series) > 1:
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    trend_series.plot(ax=ax, marker='o', color='purple')
+                    ax.set_title(f'Incident Trends ({trend_granularity})')
+                    ax.set_xlabel(x_label)
+                    ax.set_ylabel('Number of Incidents')
+                    plt.xticks(rotation=45)
+                    st.pyplot(fig)
+
+                    # Calculate trend direction
+                    values = trend_series.values
+                    if values[-1] > values[0]:
+                        st.warning("⚠️ Incident rate is increasing")
+                    elif values[-1] < values[0]:
+                        st.success("✅ Incident rate is decreasing")
+                    else:
+                        st.info("ℹ️ Incident rate is stable")
                 else:
-                    st.info("ℹ️ Incident rate is stable")
+                    st.info("Not enough data for trend analysis.")
+            else:
+                st.info("No incident data available for analysis")
+
+    def _render_evidence(self):
+        """Render the evidence review page"""
+        st.title("🖼️ Evidence Gallery")
+        
+        if not st.session_state.alert_history:
+            st.info("No cheating incidents detected yet.")
+            return
+            
+        st.subheader("Detected Incidents")
+        
+        # Filters
+        col1, col2 = st.columns(2)
+        with col1:
+            min_confidence = st.slider(
+                "Minimum Confidence", 0.0, 1.0, 0.6, 0.05)
+        with col2:
+            min_people = st.slider(
+                "Minimum People", 1, 10, 1)
+        
+        # Filter alerts
+        filtered = [
+            alert for alert in st.session_state.alert_history
+            if alert['confidence'] >= min_confidence 
+            and alert['people_count'] >= min_people
+        ]
+        
+        if not filtered:
+            st.warning("No alerts match your criteria")
         else:
-            st.info("No incident data available for analysis")
+            for alert in reversed(filtered):
+                with st.expander(
+                    f"Alert at {alert['timestamp'].strftime('%Y-%m-%d %H:%M:%S')} - "
+                    f"Confidence: {alert['confidence']:.2f}"):
+                    
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.image(alert['image_path'])
+                    with col2:
+                        st.write(f"**Time:** {alert['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+                        st.write(f"**Confidence:** {alert['confidence']:.2f}")
+                        st.write(f"**People:** {alert['people_count']}")
+                        
+                        with open(alert['image_path'], 'rb') as f:
+                            st.download_button(
+                                "Download Evidence",
+                                f.read(),
+                                file_name=os.path.basename(alert['image_path'])
+                            )
 
     def _render_evidence(self):
         """Render the evidence review page"""
@@ -2403,6 +2467,19 @@ class ExamVisioUI:
                 )
         else:
             st.info("No history data available yet.")
+
+    def render_report(self):
+      if "current_page" not in st.session_state:
+        st.session_state.current_page = "Reports"
+    
+      if st.session_state.current_page == "Reports":
+        try:
+            from report_generator import render_report_page
+            render_report_page()
+        except Exception as e:
+            st.error(f"Error rendering report: {str(e)}")
+            
+            
             
 
     def _render_settings(self):
