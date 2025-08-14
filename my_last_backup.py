@@ -1210,399 +1210,319 @@ class ExamVisioUI:
         st.sidebar.metric("Alerts", len(st.session_state.alert_history))
 
     def _render_dashboard(self):
-        """Render the main dashboard"""
-        st.title("📊 ExamVisio Pro Dashboard")
-        
-        class DataContainer:
-            def __init__(self, data):
-                self.data = data
-                
-        try:
-            # Initialize flags for data availability
-            has_local_data = False
-            has_db_data = False
-            
-            # Check for local monitoring data
-            has_local_data = (hasattr(st.session_state, 'detection_history') and 
-                            isinstance(getattr(st.session_state, 'detection_history', None), pd.DataFrame) and 
-                            not getattr(st.session_state, 'detection_history', pd.DataFrame()).empty)
-            
-            # Get dashboard metrics from database
-            try:
-                metrics = self.db_manager.get_dashboard_metrics()
-                has_db_data = bool(metrics.get('total_exams', 0) > 0)
-            except Exception as e:
-                logger.error(f"Failed to get dashboard metrics: {e}")
-                metrics = {
-                    'total_exams': 0,
-                    'active_exams': 0,
-                    'completed_exams': 0,
-                    'total_alerts': 0,
-                    'pending_reviews': 0,
-                    'recent_alerts': [],
-                    'upcoming_exams': []
-                }
-            
-            # Fetch exam data with proper response handling
-            try:
-                # Using execute() returns a dict with 'data' key
-                try:
-                    exams_response = self.db_manager.supabase.from_('exams').select('*').execute()
-                    detections_response = self.db_manager.supabase.from_('detections').select('*').execute()
-                    alerts_response = self.db_manager.supabase.from_('alerts').select('*').execute()
-                    
-                    # Handle responses safely
-                    def get_data(response):
-                        if isinstance(response, dict):
-                            return response.get('data', [])
-                        elif hasattr(response, 'data'):
-                            return response.data
-                        return []
-                        
-                    exams_data = get_data(exams_response)
-                    detections_data = get_data(detections_response)
-                    alerts_data = get_data(alerts_response)
-                except KeyError as e:
-                    logger.error(f"Missing key in response: {e}")
-                    exams_data, detections_data, alerts_data = [], [], []
-                
-                # Create data containers
-                exams = DataContainer(exams_data)
-                detections = DataContainer(detections_data)
-                alerts = DataContainer(alerts_data)
-                
-                # Update metrics with actual data
-                metrics['total_alerts'] = len(alerts_data) if alerts_data else 0
-                
-                # Calculate average confidence from detections
-                if detections_data:
-                    confidences = [d.get('confidence', 0) for d in detections_data if d.get('confidence') is not None]
-                    metrics['avg_confidence'] = sum(confidences) / len(confidences) if confidences else 0
-                else:
-                    metrics['avg_confidence'] = 0
-                
-            except Exception as e:
-                logger.error(f"Database fetch failed: {str(e)}")
-                has_db_data = False
-                exams = DataContainer([])
-                detections = DataContainer([])
-                alerts = DataContainer([])
-            
-            # Display database metrics
-            if has_db_data:
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Exams", metrics['total_exams'])
-                with col2:
-                    st.metric("Active Exams", metrics['active_exams'], 
-                             delta="+1" if metrics['active_exams'] > 0 else None)
-                with col3:
-                    st.metric("Completed", metrics['completed_exams'])
-                with col4:
-                    st.metric("Total Alerts", metrics['total_alerts'], 
-                             delta=f"{metrics['pending_reviews']} pending" if metrics['pending_reviews'] > 0 else None)
-            
-            if has_local_data:
-                st.subheader("📊 Current Monitoring Session")
-                monitoring_cols = st.columns(4)
-                with monitoring_cols[0]:
-                    st.metric("Detections", len(st.session_state.detection_history))
-                with monitoring_cols[1]:
-                    st.metric("Cheating", st.session_state.detection_counts['cheating'])
-                with monitoring_cols[2]:
-                    st.metric("Good Behavior", st.session_state.detection_counts['good'])
-                with monitoring_cols[3]:
-                    alert_rate = (len(st.session_state.alert_history) / 
-                                len(st.session_state.detection_history) * 100)
-                    st.metric("Alert Rate", f"{alert_rate:.1f}%")
-            
-            # Show upcoming exams
-            if metrics['upcoming_exams']:
-                st.subheader("📅 Upcoming Exams")
-                for exam in metrics['upcoming_exams']:
-                    with st.expander(f"{exam['exam_name']} - {exam['course_code']}", expanded=False):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"**Start:** {exam['start_time']}")
-                            st.write(f"**Duration:** {exam['duration']} minutes")
-                            st.write(f"**Venue:** {exam['venue']}")
-                        with col2:
-                            st.write(f"**Department:** {exam['department']}")
-                            st.write(f"**Students:** {exam['total_students']}")
-                            st.write(f"**Instructor:** {exam['instructor']}")
-            else:
-                st.info("No upcoming exams scheduled")
-            
-            # Show recent alerts
-            if metrics['recent_alerts']:
-                st.subheader("🚨 Recent Alerts")
-                for alert in metrics['recent_alerts']:
-                    with st.expander(
-                        f"Alert at {alert['timestamp']} - {alert['alert_type'].title()}", 
-                        expanded=False
-                    ):
-                        st.write(f"**Confidence:** {alert['confidence']:.2f}")
-                        if alert['evidence_path']:
-                            st.image(alert['evidence_path'], width=300)
-                        st.button(
-                            "Mark as Reviewed", 
-                            key=f"review_{alert['id']}",
-                            on_click=lambda: self.db_manager.update_alert(
-                                alert['id'], 
-                                {'reviewed': True}
-                            )
-                        )
-            
-            # Quick Actions
-            st.subheader("🔄 Quick Actions")
-            quick_cols = st.columns(4)
-            with quick_cols[0]:
-                if st.button("➕ New Exam", use_container_width=True):
-                    st.session_state.current_page = "Exam Configuration"
-                    st.rerun()
-            with quick_cols[1]:
-                if st.button("🎥 Start Monitoring", use_container_width=True):
-                    st.session_state.current_page = "Live Monitoring"
-                    st.rerun()
-            with quick_cols[2]:
-                if st.button("📊 View Analytics", use_container_width=True):
-                    st.session_state.current_page = "Analytics Dashboard"
-                    st.rerun()
-            with quick_cols[3]:
-                if st.button("📄 Generate Report", use_container_width=True):
-                    st.session_state.current_page = "Reports"
-                    st.rerun()
-                    
-        except Exception as e:
-            st.error(f"Error loading dashboard: {str(e)}")
-            logger.error(f"Dashboard error: {e}")
-            exams = DataContainer([])
-            detections = DataContainer([])
-            alerts = DataContainer([])        # Show appropriate content based on data availability
-        if not has_local_data and not has_db_data:
-            st.info("Welcome to ExamVisio Pro! To get started:")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if st.button("➕ Configure New Exam", use_container_width=True):
-                    st.session_state.current_page = "Exam Configuration"
-                    st.rerun()
-            with col2:
-                if st.button("📅 Schedule an Exam", use_container_width=True):
-                    st.session_state.current_page = "Exam Scheduling"
-                    st.rerun()
-            with col3:
-                if st.button("📡 Start Monitoring", use_container_width=True):
-                    st.session_state.current_page = "Live Monitoring"
-                    st.rerun()
-                    
-            # Show getting started guide
-            st.markdown("""
-            ### Getting Started Guide
-            1. **Configure Exam**: Set up exam details, course information, and monitoring settings
-            2. **Schedule Exam**: Plan your exam sessions and set monitoring duration
-            3. **Start Monitoring**: Begin real-time exam supervision
-            
-            Once you start monitoring or configure exams, you'll see:
-            - Real-time monitoring statistics
-            - Exam session analytics
-            - Detection reports and alerts
-            """)
-            return
-            
-        # Show local monitoring data if available
-        if has_local_data:
-            st.subheader("📊 Current Monitoring Session")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Detections", len(st.session_state.detection_history))
-            with col2:
-                st.metric("Alerts", len(st.session_state.alert_history))
-            with col3:
-                cheating_count = st.session_state.detection_counts.get('cheating', 0)
-                st.metric("Cheating Incidents", cheating_count)
-            with col4:
-                good_count = st.session_state.detection_counts.get('good', 0)
-                st.metric("Normal Behavior", good_count)
-                
-        # Show database statistics if available
-        if has_db_data:
-            # Display metrics in columns
-            col1, col2, col3 = st.columns(3)
+       """Render the main dashboard with improved styling and status management"""
+       # Custom CSS for styling
+       st.markdown("""
+        <style> 
+           .metric-card {
+               background-color: #f0f2f6;
+               border-radius: 10px;
+               padding: 15px;
+               margin-bottom: 15px;
+               box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+           }
+           .metric-title {
+               font-size: 14px;
+               color: #555;
+               margin-bottom: 5px;
+           }
+           .metric-value {
+               font-size: 24px;
+               font-weight: bold;
+               color: #333;
+           }
+           .exam-card {
+               border-left: 4px solid #4e79a7;
+               padding: 10px;
+               margin: 10px 0;
+               background-color: #f9f9f9;
+               border-radius: 5px;
+           }
+           .alert-card {
+               border-left: 4px solid #e74c3c;
+               padding: 10px;
+               margin: 10px 0;
+               background-color: #fef2f2;
+               border-radius: 5px;
+           }
+       </style>
+       """, unsafe_allow_html=True)
 
-            with col1:
-                st.metric(label="Total Alerts", value=metrics['total_alerts'])
-                
-            with col2:
-                st.metric(label="Average Confidence", value=f"{metrics['avg_confidence']:.2f}")
-                
-            with col3:
-                active_exams = len([e for e in exams.data if e['status'] == 'running'])
-                st.metric(label="Active Exams", value=active_exams)
-                
-            # After showing metrics, try adding sample exam data if needed
-            try:
-                if not st.session_state.get('sample_data_added'):
-                    # Initialize sample exam data
-                    exam_data = {
-                        "exam_name": "Sample Final Exam",
-                        "exam_type": "Final",
-                        "course_code": "CS101",
-                        "department": "Computer Science",
-                        "instructor": "Dr. Smith",
-                        "degree_type": "BSc",
-                        "year_of_study": "1st Year",
-                        "total_students": 50,
-                        "start_time": (datetime.now() + timedelta(days=1)).isoformat(),
-                        "end_time": (datetime.now() + timedelta(days=1, hours=3)).isoformat(),
-                        "duration": 180,  # 3 hours in minutes
-                        "status": "scheduled",
-                        "venue": "Room 101",
-                        "face_detection": True,
-                        "noise_detection": True,
-                        "multi_face_detection": True,
-                        "confidence_threshold": 0.5
-                    }
-                    
-                    # Add the exam data to database
-                    response = self.supabase.table('exams').insert(exam_data).execute()
-                    if response.data:
-                        st.session_state.sample_data_added = True
-                        st.success("Sample exam data added successfully!")
-            except Exception as e:
-                st.warning(f"Note: {str(e)}")
-            
-        if exams.data:
-            total_exams = len(exams.data)
-            scheduled = len([e for e in exams.data if e['status'] == 'scheduled'])
-            running = len([e for e in exams.data if e['status'] == 'running'])
-            completed = len([e for e in exams.data if e['status'] == 'completed'])
-            
-            # Calculate additional metrics
-            total_monitored_time = sum([
-                (datetime.fromisoformat(e['end_time']) - datetime.fromisoformat(e['start_time'])).total_seconds() / 3600 
-                for e in exams.data if e['status'] == 'completed'
-            ])
-            total_students = sum(e['total_students'] for e in exams.data)
-            alert_rate = len(alerts.data) / total_exams if total_exams > 0 else 0
-            
-            # Add attendance data
-            attendance_data = []
-            for exam in exams.data:
-                if exam['status'] == 'completed':
-                    detections_in_exam = [d for d in detections.data if d['exam_id'] == exam['id']]
-                    unique_faces = len(set(d['people_count'] for d in detections_in_exam))
-                    attendance_data.append({
-                        'exam': exam['exam_name'],
-                        'expected': exam['total_students'],
-                        'actual': unique_faces,
-                        'percentage': (unique_faces / exam['total_students'] * 100) if exam['total_students'] > 0 else 0
-                    })
-            
-            # Display metrics in two rows
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Exams", total_exams)
-            with col2:
-                st.metric("Scheduled", scheduled)
-            with col3:
-                st.metric("Running", running, delta="+1" if running > 0 else None)
-            with col4:
-                st.metric("Completed", completed)
-                
-            # Show attendance statistics if available
-            if attendance_data:
-                st.subheader("📊 Attendance Statistics")
-                df = pd.DataFrame(attendance_data)
-                
-                # Calculate average attendance rate
-                avg_attendance = df['percentage'].mean()
-                st.metric("Average Attendance Rate", f"{avg_attendance:.1f}%")
-                
-                # Show attendance table
-                st.dataframe(
-                    df,
-                    column_config={
-                        "exam": "Exam",
-                        "expected": "Expected",
-                        "actual": "Actual",
-                        "percentage": st.column_config.ProgressColumn(
-                            "Attendance Rate",
-                            help="Percentage of expected students present",
-                            format="%{:.1f}",
-                            min_value=0,
-                            max_value=100,
-                        ),
-                    },
-                    use_container_width=True
-                )
-            
-            # Additional metrics row
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Students", total_students)
-            with col2:
-                st.metric("Hours Monitored", f"{total_monitored_time:.1f}")
-            with col3:
-                st.metric("Alerts/Exam", f"{alert_rate:.2f}")
-            with col4:
-                st.metric("Active Alerts", len([a for a in alerts.data if not a['reviewed']]))
-            
-            # Quick Actions
-            st.subheader("🔄 Quick Actions")
-            quick_col1, quick_col2, quick_col3 = st.columns(3)
-            with quick_col1:
-                if st.button("➕ Configure New Exam", use_container_width=True):
-                    st.session_state.current_page = "Exam Configuration"
-                    st.rerun()
-            with quick_col2:
-                if st.button("📅 View Schedule", use_container_width=True):
-                    st.session_state.current_page = "Exam Scheduling"
-                    st.rerun()
-            with quick_col3:
-                if st.button("📊 Generate Reports", use_container_width=True):
-                    st.session_state.current_page = "Reports"
-                    st.rerun()
-            
-            # Recent and Upcoming Exams
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("📅 Upcoming Exams")
-                upcoming = [e for e in exams.data if e['status'] == 'scheduled']
-                upcoming.sort(key=lambda x: x['start_time'])
-                if upcoming:
-                    for exam in upcoming[:3]:
-                        with st.expander(f"{exam['exam_name']} - {exam['department']}"):
-                            st.write(f"📆 Date: {exam['start_time'].split('T')[0]}")
-                            st.write(f"🕒 Time: {exam['start_time'].split('T')[1][:5]}")
-                            st.write(f"👨‍🏫 Instructor: {exam['instructor']}")
-                            if st.button("Start Monitoring", key=f"start_{exam['id']}"):
-                                st.session_state.current_page = "Live Monitoring"
-                                st.session_state.current_exam_id = exam['id']
-                                st.rerun()
-                else:
-                    st.info("No upcoming exams scheduled")
-            
-            with col2:
-                st.subheader("📝 Recent Reports")
-                completed_exams = [e for e in exams.data if e['status'] == 'completed']
-                completed_exams.sort(key=lambda x: x['end_time'], reverse=True)
-                if completed_exams:
-                    for exam in completed_exams[:3]:
-                        with st.expander(f"{exam['exam_name']} - {exam['department']}"):
-                            st.write(f"📆 Date: {exam['end_time'].split('T')[0]}")
-                            st.write(f"👨‍🏫 Instructor: {exam['instructor']}")
-                            if st.button("View Report", key=f"report_{exam['id']}"):
-                                st.session_state.current_page = "Reports"
-                                st.session_state.selected_exam_id = exam['id']
-                                st.rerun()
-                else:
-                    st.info("No completed exams yet")
-        else:
-            st.info("Welcome to ExamVisio Pro! Start by configuring your first exam.")
-            if st.button("Configure New Exam"):
-                st.session_state.current_page = "Exam Configuration"
-                st.rerun()
+       st.title("📊 ExamVisio Pro Dashboard")
+
+       class DataContainer:
+           def __init__(self, data):
+               self.data = data
+       try:
+           # Initialize flags for data availability
+           has_local_data = False
+           has_db_data = False
+
+           # Check for local monitoring data
+           has_local_data = (hasattr(st.session_state, 'detection_history') and 
+                           isinstance(getattr(st.session_state, 'detection_history', None), pd.DataFrame) and 
+                           not getattr(st.session_state, 'detection_history', pd.DataFrame()).empty)
+
+           # Get dashboard metrics from database
+           try:
+               metrics = self.db_manager.get_dashboard_metrics()
+               has_db_data = bool(metrics.get('total_exams', 0) > 0)
+           except Exception as e:
+               logger.error(f"Failed to get dashboard metrics: {e}")
+               metrics = {
+                   'total_exams': 0,
+                   'active_exams': 0,
+                   'completed_exams': 0,
+                   'total_alerts': 0,
+                   'pending_reviews': 0,
+                   'recent_alerts': [],
+                   'upcoming_exams': []
+               }
+
+           # Fetch exam data with proper response handling
+           try:
+               exams_response = self.db_manager.supabase.from_('exams').select('*').execute()
+               detections_response = self.db_manager.supabase.from_('detections').select('*').execute()
+               alerts_response = self.db_manager.supabase.from_('alerts').select('*').execute()
+
+               # Handle responses safely
+               def get_data(response):
+                   if isinstance(response, dict):
+                       return response.get('data', [])
+                   elif hasattr(response, 'data'):
+                       return response.data
+                   return []
+
+               exams_data = get_data(exams_response)
+               detections_data = get_data(detections_response)
+               alerts_data = get_data(alerts_response)
+
+               # Categorize exams by status
+               now = datetime.now().isoformat()
+               for exam in exams_data:
+                   if exam['status'] == 'running' and exam['end_time'] < now:
+                       # Update exam status to completed if end time has passed
+                       self.db_manager.supabase.from_('exams').update({'status': 'completed'}).eq('id', exam['id']).execute()
+                       exam['status'] = 'completed'
+                   elif exam['status'] == 'scheduled' and exam['start_time'] <= now <= exam['end_time']:
+                       # Update exam status to running if current time is within exam period
+                       self.db_manager.supabase.from_('exams').update({'status': 'running'}).eq('id', exam['id']).execute()
+                       exam['status'] = 'running'
+
+               # Create data containers with updated data
+               exams = DataContainer(exams_data)
+               detections = DataContainer(detections_data)
+               alerts = DataContainer(alerts_data)
+
+               # Update metrics with actual data
+               metrics['total_alerts'] = len(alerts_data) if alerts_data else 0
+
+               # Calculate average confidence from detections
+               if detections_data:
+                   confidences = [d.get('confidence', 0) for d in detections_data if d.get('confidence') is not None]
+                   metrics['avg_confidence'] = sum(confidences) / len(confidences) if confidences else 0
+               else:
+                   metrics['avg_confidence'] = 0
+
+           except Exception as e:
+               logger.error(f"Database fetch failed: {str(e)}")
+               has_db_data = False
+               exams = DataContainer([])
+               detections = DataContainer([])
+               alerts = DataContainer([])
+
+           # Display database metrics with styling
+           if has_db_data:
+               st.markdown("### 📊 Overview Metrics")
+               cols = st.columns(4)
+               with cols[0]:
+                   st.markdown('<div class="metric-card"><div class="metric-title">Total Exams</div><div class="metric-value">{}</div></div>'.format(
+                       metrics['total_exams']), unsafe_allow_html=True)
+               with cols[1]:
+                   st.markdown('<div class="metric-card"><div class="metric-title">Active Exams</div><div class="metric-value">{}{}</div></div>'.format(
+                       metrics['active_exams'],
+                       '<span style="color:green;font-size:12px;"> ▲</span>' if metrics['active_exams'] > 0 else ''),
+                       unsafe_allow_html=True)
+               with cols[2]:
+                   st.markdown('<div class="metric-card"><div class="metric-title">Completed</div><div class="metric-value">{}</div></div>'.format(
+                       metrics['completed_exams']), unsafe_allow_html=True)
+               with cols[3]:
+                   st.markdown('<div class="metric-card"><div class="metric-title">Total Alerts</div><div class="metric-value">{}{}</div></div>'.format(
+                       metrics['total_alerts'],
+                       f'<br><span style="color:red;font-size:12px;">{metrics["pending_reviews"]} pending</span>' if metrics['pending_reviews'] > 0 else ''),
+                       unsafe_allow_html=True)
+
+           # Current monitoring session
+           if has_local_data:
+               st.markdown("### 📊 Current Monitoring Session")
+               cols = st.columns(4)
+               with cols[0]:
+                   st.markdown('<div class="metric-card"><div class="metric-title">Detections</div><div class="metric-value">{}</div></div>'.format(
+                       len(st.session_state.detection_history)), unsafe_allow_html=True)
+               with cols[1]:
+                   st.markdown('<div class="metric-card"><div class="metric-title">Cheating</div><div class="metric-value" style="color:red;">{}</div></div>'.format(
+                       st.session_state.detection_counts['cheating']), unsafe_allow_html=True)
+               with cols[2]:
+                   st.markdown('<div class="metric-card"><div class="metric-title">Good Behavior</div><div class="metric-value" style="color:green;">{}</div></div>'.format(
+                       st.session_state.detection_counts['good']), unsafe_allow_html=True)
+               with cols[3]:
+                   alert_rate = (len(st.session_state.alert_history) / 
+                               len(st.session_state.detection_history) * 100) if len(st.session_state.detection_history) > 0 else 0
+                   st.markdown('<div class="metric-card"><div class="metric-title">Alert Rate</div><div class="metric-value">{:.1f}%</div></div>'.format(
+                       alert_rate), unsafe_allow_html=True)
+
+           # Upcoming exams section - show only future scheduled exams (timezone-aware)
+           from datetime import timezone
+           now_dt = datetime.now(timezone.utc)
+           def to_utc(dt_str):
+               dt = datetime.fromisoformat(dt_str)
+               return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+           upcoming_exams = [e for e in exams.data if e['status'] == 'scheduled' and to_utc(e['start_time']) > now_dt]
+           if upcoming_exams:
+               st.markdown("### 📅 Upcoming Exams")
+               for exam in sorted(upcoming_exams, key=lambda x: x['start_time']):
+                   with st.container():
+                       st.markdown(f"""
+                       <div class="exam-card">
+                           <h4>{exam['exam_name']} - {exam['course_code']}</h4>
+                           <div style="display: flex; justify-content: space-between;">
+                               <div>
+                                   <p>📅 <b>Start:</b> {datetime.fromisoformat(exam['start_time']).strftime('%b %d, %Y %I:%M %p')}</p>
+                                   <p>⏱️ <b>Duration:</b> {exam.get('duration', 'N/A')} minutes</p>
+                                   <p>🏛️ <b>Venue:</b> {exam.get('venue', 'N/A')}</p>
+                               </div>
+                               <div>
+                                   <p>👥 <b>Students:</b> {exam.get('total_students', 'N/A')}</p>
+                                   <p>👨‍🏫 <b>Instructor:</b> {exam.get('instructor', 'N/A')}</p>
+                               </div>
+                           </div>
+                           <div style="text-align: right; margin-top: 10px;">
+                       """, unsafe_allow_html=True)
+
+                       if st.button("Start Monitoring", key=f"start_{exam['id']}"):
+                           # Update exam status to running
+                           self.db_manager.supabase.from_('exams').update({'status': 'running'}).eq('id', exam['id']).execute()
+                           st.session_state.current_page = "Live Monitoring"
+                           st.session_state.current_exam_id = exam['id']
+                           st.rerun()
+
+                       st.markdown("</div></div>", unsafe_allow_html=True)
+           else:
+               st.info("No upcoming exams scheduled")
+
+           # Active exams section - only show exams that are running and not ended
+           active_exams = [e for e in exams.data if e['status'] == 'running' and to_utc(e['end_time']) > now_dt]
+           if active_exams:
+               st.markdown("### 🚀 Active Exams")
+               for exam in active_exams:
+                   with st.container():
+                       time_remaining = (datetime.fromisoformat(exam['end_time']) - now_dt).seconds // 60
+                       st.markdown(f"""
+                       <div class="exam-card" style="border-left-color: #2ecc71;">
+                           <h4>{exam['exam_name']} - {exam['course_code']}</h4>
+                           <div style="display: flex; justify-content: space-between;">
+                               <div>
+                                   <p>⏱️ <b>Time Remaining:</b> {time_remaining} mins</p>
+                                   <p>🏛️ <b>Venue:</b> {exam.get('venue', 'N/A')}</p>
+                               </div>
+                               <div>
+                                   <p>👥 <b>Students:</b> {exam.get('total_students', 'N/A')}</p>
+                                   <p>👨‍🏫 <b>Instructor:</b> {exam.get('instructor', 'N/A')}</p>
+                               </div>
+                           </div>
+                           <div style="text-align: right; margin-top: 10px;">
+                       """, unsafe_allow_html=True)
+
+                       if st.button("Stop Monitoring", key=f"stop_{exam['id']}"):
+                           # Update exam status to completed
+                           self.db_manager.supabase.from_('exams').update({'status': 'completed'}).eq('id', exam['id']).execute()
+                           st.rerun()
+
+                       st.markdown("</div></div>", unsafe_allow_html=True)
+           # Completed exams section - only show exams with status completed
+           completed_exams = [e for e in exams.data if e['status'] == 'completed']
+           # Update metrics for active and completed exams
+           metrics['active_exams'] = len(active_exams)
+           metrics['completed_exams'] = len(completed_exams)
+
+           # Recent alerts
+           if metrics['recent_alerts']:
+               st.markdown("### 🚨 Recent Alerts")
+               for alert in metrics['recent_alerts']:
+                   with st.container():
+                       st.markdown(f"""
+                       <div class="alert-card">
+                           <h4>Alert at {alert['timestamp']} - {alert['alert_type'].title()}</h4>
+                           <p>🔍 <b>Confidence:</b> {alert['confidence']:.2f}</p>
+                       """, unsafe_allow_html=True)
+
+                       if alert['evidence_path']:
+                           st.image(alert['evidence_path'], width=300)
+
+                       if not alert.get('reviewed', False):
+                           if st.button("Mark as Reviewed", key=f"review_{alert['id']}"):
+                               self.db_manager.update_alert(alert['id'], {'reviewed': True})
+                               st.rerun()
+
+                       st.markdown("</div>", unsafe_allow_html=True)
+
+           # Quick actions with better styling
+           st.markdown("### 🔄 Quick Actions")
+           cols = st.columns(4)
+           with cols[0]:
+               if st.button("➕ New Exam", use_container_width=True, 
+                           help="Configure a new exam session"):
+                   st.session_state.current_page = "Exam Configuration"
+                   st.rerun()
+           with cols[1]:
+               if st.button("🎥 Start Monitoring", use_container_width=True,
+                           help="Begin monitoring an exam session"):
+                   st.session_state.current_page = "Live Monitoring"
+                   st.rerun()
+           with cols[2]:
+               if st.button("📊 View Analytics", use_container_width=True,
+                           help="View detailed analytics"):
+                   st.session_state.current_page = "Analytics Dashboard"
+                   st.rerun()
+           with cols[3]:
+               if st.button("📄 Generate Report", use_container_width=True,
+                           help="Generate exam reports"):
+                   st.session_state.current_page = "Reports"
+                   st.rerun()
+
+       except Exception as e:
+           st.error(f"Error loading dashboard: {str(e)}")
+           logger.error(f"Dashboard error: {e}")
+
+       # Empty state if no data
+       if not has_local_data and not has_db_data:
+           st.info("Welcome to ExamVisio Pro! To get started:")
+
+           cols = st.columns(3)
+           with cols[0]:
+               if st.button("➕ Configure New Exam", use_container_width=True):
+                   st.session_state.current_page = "Exam Configuration"
+                   st.rerun()
+           with cols[1]:
+               if st.button("📅 Schedule an Exam", use_container_width=True):
+                   st.session_state.current_page = "Exam Scheduling"
+                   st.rerun()
+           with cols[2]:
+               if st.button("📡 Start Monitoring", use_container_width=True):
+                   st.session_state.current_page = "Live Monitoring"
+                   st.rerun()
+
+           st.markdown("""
+           ### Getting Started Guide
+           1. **Configure Exam**: Set up exam details, course information, and monitoring settings
+           2. **Schedule Exam**: Plan your exam sessions and set monitoring duration
+           3. **Start Monitoring**: Begin real-time exam supervision
+
+           Once you start monitoring or configure exams, you'll see:
+           - Real-time monitoring statistics
+           - Exam session analytics
+           - Detection reports and alerts
+           """)
     
     def _render_current_page(self):
         """Render the current active page"""
