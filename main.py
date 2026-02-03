@@ -2450,16 +2450,16 @@ class ExamVisioUI:
                 st.success("✅ Camera accessible")
                 cap.release()
             else:
-                st.error("❌ Camera not accessible")
+                st.error("Camera not accessible")
         except Exception as e:
-            st.error(f"❌ Camera check failed: {e}")
+            st.error(f"Camera check failed: {e}")
         
         # Model check
         try:
             test_model = YOLO(Config.MODEL_PATH)
             st.success("✅ Model loaded successfully")
         except Exception as e:
-            st.error(f"❌ Model load failed: {e}")
+            st.error(f"Model load failed: {e}")
         
         # Filesystem check
         try:
@@ -2467,9 +2467,9 @@ class ExamVisioUI:
             with open(test_file, 'w') as f:
                 f.write("test")
             os.unlink(test_file)
-            st.success("✅ Filesystem writable")
+            st.success("Filesystem writable")
         except Exception as e:
-            st.error(f"❌ Filesystem error: {e}")
+            st.error(f"Filesystem error: {e}")
             
         # Database connectivity check
         try:
@@ -2479,9 +2479,9 @@ class ExamVisioUI:
                 self.supabase.table('exams').delete().eq('test', True).execute()
                 st.success("✅ Database connection successful")
             else:
-                st.error("❌ Database write failed")
+                st.error("Database write failed")
         except Exception as e:
-            st.error(f"❌ Database connection failed: {e}")
+            st.error(f"Database connection failed: {e}")
             
         # Check system resources
         try:
@@ -2505,7 +2505,7 @@ class ExamVisioUI:
                          delta_color="inverse",
                          delta="High" if disk_percent > 80 else "Normal")
         except ImportError:
-            st.info("💡 Install psutil for system resource monitoring")
+            st.info("Install psutil for system resource monitoring")
 
 # ====================
 # MAIN EXECUTION
